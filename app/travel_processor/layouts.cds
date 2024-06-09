@@ -1,8 +1,70 @@
 using TravelService from '../../srv/travel-service';
+using from '../../db/schema';
+using from '../../db/master-data';
 
 //
 // annotatios that control the fiori layout
 //
+
+annotate TravelService.Travel with @UI: {
+    SelectionVariant #canceled: {
+        $Type           : 'UI.SelectionVariantType',
+        ID              : 'canceled',
+        Text            : 'canceled',
+        Parameters      : [
+
+        ],
+        FilterExpression: '',
+        SelectOptions   : [{
+            $Type       : 'UI.SelectOptionType',
+            PropertyName: TravelStatus_code,
+            Ranges      : [{
+                $Type : 'UI.SelectionRangeType',
+                Sign  : #I,
+                Option: #EQ,
+                Low   : 'X',
+            }, ],
+        }, ],
+    },
+    SelectionVariant #open    : {
+        $Type           : 'UI.SelectionVariantType',
+        ID              : 'open',
+        Text            : 'open',
+        Parameters      : [
+
+        ],
+        FilterExpression: '',
+        SelectOptions   : [{
+            $Type       : 'UI.SelectOptionType',
+            PropertyName: TravelStatus_code,
+            Ranges      : [{
+                $Type : 'UI.SelectionRangeType',
+                Sign  : #I,
+                Option: #EQ,
+                Low   : 'O',
+            }, ],
+        }, ],
+    },
+    SelectionVariant #accepted: {
+        $Type           : 'UI.SelectionVariantType',
+        ID              : 'accepted',
+        Text            : 'accepted',
+        Parameters      : [
+
+        ],
+        FilterExpression: '',
+        SelectOptions   : [{
+            $Type       : 'UI.SelectOptionType',
+            PropertyName: TravelStatus_code,
+            Ranges      : [{
+                $Type : 'UI.SelectionRangeType',
+                Sign  : #I,
+                Option: #EQ,
+                Low   : 'A',
+            }, ],
+        }, ],
+    }
+};
 
 annotate TravelService.Travel with @UI: {
 
@@ -42,7 +104,9 @@ annotate TravelService.Travel with @UI: {
     SelectionFields       : [
         to_Agency_AgencyID,
         to_Customer_CustomerID,
-        TravelStatus_code
+        TravelStatus_code,
+        BeginDate,
+        EndDate
     ],
     LineItem              : [
         {
@@ -72,6 +136,21 @@ annotate TravelService.Travel with @UI: {
             Value            : TravelStatus_code,
             Criticality      : TravelStatus.criticality,
             ![@UI.Importance]: #High
+        },
+        {
+            $Type : 'UI.DataFieldForAction',
+            Action: 'TravelService.deductDiscount',
+            Label : '{i18n>DeductDiscount}',
+        },
+        {
+            $Type : 'UI.DataFieldForAnnotation',
+            Target: '@UI.DataPoint#Progress',
+            Label : '{i18n>ProgressOfTravel}',
+        },
+        {
+            $Type : 'UI.DataFieldForAnnotation',
+            Target: 'to_Agency/@Communication.Contact#contact',
+            Label : 'Agency',
         }
     ],
     Facets                : [
@@ -142,7 +221,12 @@ annotate TravelService.Booking with @UI: {
         },
         {Value: FlightDate},
         {Value: FlightPrice},
-        {Value: BookingStatus_code}
+        {Value: BookingStatus_code},
+        {
+            $Type : 'UI.DataFieldForAnnotation',
+            Target: '@UI.Chart#TotalSupplPrice',
+            Label : '{i18n>Supplements}',
+        }
     ],
     Facets                        : [
         {
@@ -221,12 +305,54 @@ SortOrder: [{
     Descending: true
 }]}};
 
-annotate TravelService.Travel with @(
-    UI.SelectionFields : [
-        to_Agency_AgencyID,
-        to_Customer_CustomerID,
-        TravelStatus_code,
-        EndDate,
-        BeginDate,
-    ]
+annotate TravelService.Travel with @(UI.DataPoint #Progress: {
+    Value        : Progress,
+    Visualization: #Progress,
+    TargetValue  : 100,
+});
+
+annotate TravelService.Booking with @(
+    UI.DataPoint #TotalSupplPrice: {
+        Value                 : TotalSupplPrice,
+        MinimumValue          : 0,
+        MaximumValue          : 120,
+        TargetValue           : 100,
+        Visualization         : #BulletChart,
+        //  Criticality : TotalSupplPrice, // it has precedence over criticalityCalculation => in order to have the criticality color do not use it
+        CriticalityCalculation: {
+            $Type                 : 'UI.CriticalityCalculationType',
+            ImprovementDirection  : #Maximize,
+            DeviationRangeLowValue: 20,
+            ToleranceRangeLowValue: 75
+        }
+    },
+    UI.Chart #TotalSupplPrice    : {
+        ChartType        : #Bullet,
+        Title            : 'total supplements',
+        AxisScaling      : {$Type: 'UI.ChartAxisScalingType', },
+        Measures         : [TotalSupplPrice, ],
+        MeasureAttributes: [{
+            DataPoint: '@UI.DataPoint#TotalSupplPrice',
+            Role     : #Axis1,
+            Measure  : TotalSupplPrice,
+        }, ],
+    }
 );
+
+annotate TravelService.TravelAgency with @(Communication.Contact #contact: {
+    $Type: 'Communication.ContactType',
+    fn   : Name,
+    tel  : [{
+        $Type: 'Communication.PhoneNumberType',
+        type : #work,
+        uri  : PhoneNumber,
+    }, ],
+    adr  : [{
+        $Type   : 'Communication.AddressType',
+        type    : #work,
+        street  : Street,
+        locality: City,
+        code    : PostalCode,
+        country : CountryCode_code,
+    }, ],
+});

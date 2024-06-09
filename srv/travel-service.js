@@ -76,12 +76,24 @@ init() {
    */
   this.after ('PATCH', 'BookingSupplement', async (_,req) => { if ('Price' in req.data) {
     // We need to fetch the Travel's UUID for the given Supplement target
+    const { booking } = await SELECT.one `to_Booking_BookingUUID as booking` 
+.from (BookingSupplement.drafts).where({BookSupplUUID:req.data.BookSupplUUID})
     const { travel } = await SELECT.one `to_Travel_TravelUUID as travel` .from (Booking.drafts)
-      .where `BookingUUID = ${ SELECT.one `to_Booking_BookingUUID` .from (BookingSupplement.drafts).where({BookSupplUUID:req.data.BookSupplUUID}) }`
+      .where `BookingUUID = ${booking} `
       // .where `BookingUUID = ${ SELECT.one `to_Booking_BookingUUID` .from (req._target) }`
       //> REVISIT: req._target not supported for subselects -> see tests
+      await this._update_totals_supplement (booking)
     return this._update_totals4 (travel)
   }})
+
+  /**
+   * Update the Booking's TotalSupplPrice
+   */
+this._update_totals_supplement = async function (booking) {
+    const { totals } = await SELECT.one `coalesce (sum (Price),0) as totals` .from (BookingSupplement.drafts) .where
+     `to_Booking_BookingUUID = ${booking}`
+    return  UPDATE (Booking.drafts, booking) .with({TotalSupplPrice: totals})
+}
 
   /**
    * Update the Travel's TotalPrice when a Booking Supplement is deleted.
@@ -137,13 +149,68 @@ init() {
     if (BeginDate > EndDate) req.error (400, `Begin Date ${BeginDate} must be before End Date ${EndDate}.`, 'in/BeginDate')
   })
 
+/**
+   * Calculate the progress of the travel booking.
+   */
+
+  // Travel is new (0 bookings) = 10%
+  // Travel contains at least one booking = 50%
+  // Travel contains at least two bookings = 65%
+  // Supplement target reached + 5 % per booking, max 90%
+  // Travel is accepted = 100% -> see acceptTravel
+  // Travel is rejected = 0% -> see rejectTravel
+  this.before ('SAVE', 'Travel', async req => {
+    if (!req.event === 'CREATE' && !req.event === 'UPDATE') return //only calculate if create or update
+    let score = 10
+    const { TravelUUID } = req.data
+    const res = await SELECT .from(Booking.drafts) .where `to_Travel_TravelUUID = ${TravelUUID}`
+    if (res.length >= 1) score += 40
+    if (res.length >= 2) score += 15
+    res.forEach(element => {
+      if (element.TotalSupplPrice > 70) score += 5
+    });
+    if (score > 90) score = 90;
+    req.data.Progress = score
+  })
 
   //
   // Action Implementations...
   //
 
-  this.on ('acceptTravel', req => UPDATE (req._target) .with ({TravelStatus_code:'A'}))
-  this.on ('rejectTravel', req => UPDATE (req._target) .with ({TravelStatus_code:'X'}))
+  this.on ('acceptTravel', async req => {
+    await UPDATE (req._target) .with ({TravelStatus_code:'A'})
+    return this._update_progress(req._target, 100)
+  })
+  this.on ('rejectTravel', async req => {
+    await UPDATE (req._target) .with ({TravelStatus_code:'X'})
+    return this._update_progress(req._target, 0)
+  })
+
+  this._update_progress = async function (travel, progress){
+    return await UPDATE (travel) . with({Progress : progress})
+  }
+  
+  this.on ('deductDiscount', async req => {
+    let discount = req.data.percent / 100
+    let succeeded = await UPDATE (req._target)
+      .where `TravelStatus_code != 'A'`
+      .and `BookingFee is not null`
+      .with (`
+        TotalPrice = round (TotalPrice - BookingFee * ${discount}, 3),
+        BookingFee = round (BookingFee - BookingFee * ${discount}, 3)
+      `)
+    if (!succeeded) { //> let's find out why...
+      let travel = await SELECT.one `TravelID as ID, TravelStatus_code as status, BookingFee` .from (req._target)
+      if (!travel) throw req.reject (404, `Travel "${travel.ID}" does not exist; may have been deleted meanwhile.`)
+      if (travel.status === 'A') req.reject (400, `Travel "${travel.ID}" has been approved already.`)
+      if (travel.BookingFee == null) throw req.reject (404, `No discount possible, as travel "${travel.ID}" does not yet have a booking fee added.`)
+    } else {
+      // Note: it is important to read from this, not db to include draft handling
+      // REVISIT: through req._target workaround, IsActiveEntity is non-enumerable, which breaks this.read(Travel, req.params[0])
+      const [{ TravelUUID, IsActiveEntity }] = req.params
+      return this.read(Travel, { TravelUUID, IsActiveEntity })
+    }
+  })
 
   // Add base class's handlers. Handlers registered above go first.
   return super.init()
